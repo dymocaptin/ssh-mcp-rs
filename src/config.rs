@@ -70,6 +70,20 @@ pub enum ConfigError {
     NoHosts,
 }
 
+fn expand_tilde(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    } else if s == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    path
+}
+
 impl Config {
     /// Load and validate config from the given path.
     pub fn load(path: &std::path::Path) -> Result<Self, ConfigError> {
@@ -77,9 +91,21 @@ impl Config {
             return Err(ConfigError::NotFound(path.to_owned()));
         }
         let text = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&text)?;
+        let mut config: Config = toml::from_str(&text)?;
+        config.expand_tildes();
         config.validate()?;
         Ok(config)
+    }
+
+    fn expand_tildes(&mut self) {
+        if let Some(p) = self.shellcheck_path.take() {
+            self.shellcheck_path = Some(expand_tilde(p));
+        }
+        for host in self.hosts.values_mut() {
+            if let Some(p) = host.key_path.take() {
+                host.key_path = Some(expand_tilde(p));
+            }
+        }
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
@@ -263,5 +289,97 @@ unknown_field = "oops"
     fn default_config_path_is_some() {
         // Just verify it resolves without panicking; path may not exist.
         assert!(default_config_path().is_some());
+    }
+
+    #[test]
+    fn expands_tilde_in_key_path() {
+        let f = write_toml(
+            r#"
+[hosts.h]
+host = "1.2.3.4"
+user = "u"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"
+"#,
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        let key_path = cfg.hosts["h"].key_path.as_ref().unwrap();
+        assert!(!key_path.starts_with("~"), "tilde should be expanded");
+        assert!(key_path.is_absolute(), "path should be absolute after expansion");
+        // Must end with the literal suffix, not any transformed version
+        assert!(key_path.ends_with(".ssh/id_ed25519"));
+    }
+
+    #[test]
+    fn expands_tilde_in_shellcheck_path() {
+        let f = write_toml(
+            r#"
+shellcheck_path = "~/bin/shellcheck"
+
+[hosts.h]
+host = "1.2.3.4"
+user = "u"
+auth = "agent"
+"#,
+        );
+        let cfg = Config::load(f.path()).unwrap();
+        let sc_path = cfg.shellcheck_path.as_ref().unwrap();
+        assert!(!sc_path.starts_with("~"), "tilde should be expanded");
+        assert!(sc_path.is_absolute(), "path should be absolute after expansion");
+        assert!(sc_path.ends_with("bin/shellcheck"));
+    }
+
+    // --- adversarial tilde expansion tests ---
+
+    #[test]
+    fn tilde_expansion_does_not_expand_other_users() {
+        // ~username/... must not be treated as a home-dir expansion
+        let p = PathBuf::from("~root/.ssh/id_rsa");
+        let expanded = expand_tilde(p.clone());
+        assert_eq!(expanded, p, "~username form must not be expanded");
+    }
+
+    #[test]
+    fn tilde_expansion_does_not_expand_embedded_tilde() {
+        // A tilde not at the start of the path must be left alone
+        let p = PathBuf::from("/home/user/~/sneaky");
+        let expanded = expand_tilde(p.clone());
+        assert_eq!(expanded, p, "embedded tilde must not be expanded");
+    }
+
+    #[test]
+    fn tilde_expansion_does_not_strip_path_components() {
+        // ~/../../etc/passwd should expand to <home>/../../etc/passwd —
+        // the component count is preserved; no normalization or traversal
+        // suppression is performed here (that is the OS/russh's concern).
+        let home = dirs::home_dir().unwrap();
+        let p = PathBuf::from("~/../../etc/passwd");
+        let expanded = expand_tilde(p);
+        assert_eq!(expanded, home.join("../../etc/passwd"));
+        // Crucially, the expanded form still has the traversal components
+        // visible — we do not silently drop or normalize them.
+        let s = expanded.to_string_lossy();
+        assert!(s.contains("../../"), "traversal components must be preserved verbatim");
+    }
+
+    #[test]
+    fn tilde_expansion_bare_tilde_expands_to_home() {
+        let home = dirs::home_dir().unwrap();
+        let expanded = expand_tilde(PathBuf::from("~"));
+        assert_eq!(expanded, home);
+    }
+
+    #[test]
+    fn tilde_expansion_absolute_path_unchanged() {
+        let p = PathBuf::from("/absolute/path/.ssh/id_ed25519");
+        let expanded = expand_tilde(p.clone());
+        assert_eq!(expanded, p);
+    }
+
+    #[test]
+    fn tilde_expansion_relative_non_tilde_unchanged() {
+        let p = PathBuf::from("relative/path/key");
+        let expanded = expand_tilde(p.clone());
+        assert_eq!(expanded, p);
     }
 }
