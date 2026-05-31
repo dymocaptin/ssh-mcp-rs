@@ -286,10 +286,10 @@ pub fn format_exec_result(out: crate::ssh::ExecOutput) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::config::{AuthMethod, Config};
     use crate::pool::SessionFactory;
     use crate::ssh::{ExecOutput, MockSshSession, SshSession};
+    use std::collections::HashMap;
 
     fn make_host(name: &str) -> HostConfig {
         HostConfig {

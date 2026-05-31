@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rmcp::{transport::stdio, ServiceExt};
-use tokio::sync::RwLock;
 use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
 mod config;
@@ -89,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(path = %config_path.display(), "SIGHUP received — reloading config");
                 match reload::reload_config(&config_path, &shared_config, &pool).await {
                     Ok(()) => tracing::info!("config reload successful"),
-                    Err(e) => tracing::warn!(error = %e, "config reload failed — keeping old config"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "config reload failed — keeping old config")
+                    }
                 }
             }
         });

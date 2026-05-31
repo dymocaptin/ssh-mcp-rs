@@ -24,9 +24,9 @@ pub async fn reload_config(
 mod tests {
     use super::*;
     use crate::config::{AuthMethod, HostConfig};
+    use crate::error::ToolError;
     use crate::pool::SessionFactory;
     use crate::ssh::{MockSshSession, SshSession};
-    use crate::error::ToolError;
     use std::collections::HashMap;
     use std::io::Write as _;
     use std::sync::Mutex;
@@ -55,7 +55,10 @@ mod tests {
         for &n in host_names {
             hosts.insert(n.to_string(), make_host_config(n));
         }
-        Config { shellcheck_path: None, hosts }
+        Config {
+            shellcheck_path: None,
+            hosts,
+        }
     }
 
     fn write_toml(content: &str) -> tempfile::NamedTempFile {
@@ -78,7 +81,10 @@ mod tests {
     }
 
     fn make_pool(cfg: Config) -> Arc<ConnectionPool> {
-        Arc::new(ConnectionPool::new(cfg, Arc::new(NoopFactory) as Arc<dyn SessionFactory>))
+        Arc::new(ConnectionPool::new(
+            cfg,
+            Arc::new(NoopFactory) as Arc<dyn SessionFactory>,
+        ))
     }
 
     // ── tests ─────────────────────────────────────────────────────────────────
@@ -173,8 +179,7 @@ auth = "agent"
         let shared = Arc::new(RwLock::new(initial.clone()));
         let pool = make_pool(initial);
 
-        let result =
-            reload_config(Path::new("/nonexistent/path.toml"), &shared, &pool).await;
+        let result = reload_config(Path::new("/nonexistent/path.toml"), &shared, &pool).await;
 
         assert!(matches!(result, Err(ConfigError::NotFound(_))));
         assert_eq!(pool.host_names().await, vec!["prod"]);
