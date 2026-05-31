@@ -12,7 +12,7 @@ use ssh_mcp_rs::config::{AuthMethod, Config, HostConfig};
 use ssh_mcp_rs::pool::{ConnectionPool, SessionFactory};
 use ssh_mcp_rs::security::SecurityChecker;
 use ssh_mcp_rs::server::SshMcpServer;
-use ssh_mcp_rs::ssh::{RusshFactory, SshSession as _};
+use ssh_mcp_rs::ssh::RusshFactory;
 
 const SSH_USER: &str = "linuxserver";
 const SSH_PASSWORD: &str = "testpassword";
