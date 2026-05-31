@@ -3,9 +3,17 @@ name = "ssh-mcp-rs"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "ssh_mcp_rs"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ssh-mcp-rs"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
 
 [dependencies]
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-io"] }
