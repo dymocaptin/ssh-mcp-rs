@@ -62,7 +62,6 @@ impl ConnectionPool {
     }
 
     /// Remove a cached session (forces reconnect on next `get`).
-    #[allow(dead_code)]
     pub async fn remove(&self, host_name: &str) {
         self.sessions.write().await.remove(host_name);
     }

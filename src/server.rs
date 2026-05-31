@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -13,6 +14,37 @@ use crate::config::HostConfig;
 use crate::error::ToolError;
 use crate::pool::ConnectionPool;
 use crate::security::SecurityChecker;
+use crate::ssh::SshSession;
+
+/// Run `op` with a pooled session for `host`.
+///
+/// On `ToolError::SshConnect` the stale session is evicted and the connection is
+/// re-established; `op` is then retried exactly once.  Any error from the retry
+/// propagates immediately without further retry, preventing infinite loops on
+/// persistent failures (auth issues, genuine unavailability, etc.).
+async fn with_reconnect<F, Fut, T>(
+    pool: &Arc<ConnectionPool>,
+    host: &str,
+    op: F,
+) -> Result<T, ToolError>
+where
+    F: Fn(Arc<dyn SshSession>) -> Fut,
+    Fut: Future<Output = Result<T, ToolError>>,
+{
+    let session = pool.get(host).await?;
+    match op(Arc::clone(&session)).await {
+        Err(ToolError::SshConnect { .. }) => {
+            tracing::warn!(
+                host,
+                "SSH channel failure — evicting stale session and reconnecting"
+            );
+            pool.remove(host).await;
+            let fresh = pool.get(host).await?;
+            op(fresh).await
+        }
+        other => other,
+    }
+}
 
 /// Parameters for the `exec` tool.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -111,17 +143,14 @@ impl SshMcpServer {
             .check(&p.command, cfg)
             .map_err(|e| e.into_mcp_error())?;
 
-        let session = self
-            .pool
-            .get(&p.host)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, command = %p.command, description = ?p.description, "exec");
-
-        let out = session
-            .exec(&p.command)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
+        let command = p.command.clone();
+        let out = with_reconnect(&self.pool, &p.host, |session| {
+            let cmd = command.clone();
+            async move { session.exec(&cmd).await }
+        })
+        .await
+        .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, exit_code = out.exit_code, "exec complete");
         Ok(format_exec_result(out))
     }
@@ -141,17 +170,13 @@ impl SshMcpServer {
             .map_err(|e| e.into_mcp_error())?;
 
         let sudo_cmd = build_sudo_command(&p.command, cfg.sudo_password.as_deref());
-        let session = self
-            .pool
-            .get(&p.host)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, command = %p.command, description = ?p.description, "sudo_exec");
-
-        let out = session
-            .exec(&sudo_cmd)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
+        let out = with_reconnect(&self.pool, &p.host, |session| {
+            let cmd = sudo_cmd.clone();
+            async move { session.exec(&cmd).await }
+        })
+        .await
+        .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, exit_code = out.exit_code, "sudo_exec complete");
         Ok(format_exec_result(out))
     }
@@ -172,17 +197,16 @@ impl SshMcpServer {
             ToolError::InvalidParam(format!("invalid base64: {e}")).into_mcp_error()
         })?;
         let mode = p.mode.unwrap_or(0o644);
-        let session = self
-            .pool
-            .get(&p.host)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, path = %p.remote_path, bytes = content.len(), "put_file");
-
-        session
-            .put_file(&p.remote_path, &content, mode)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
+        let path = p.remote_path.clone();
+        let bytes = content.clone();
+        with_reconnect(&self.pool, &p.host, |session| {
+            let remote_path = path.clone();
+            let data = bytes.clone();
+            async move { session.put_file(&remote_path, &data, mode).await }
+        })
+        .await
+        .map_err(|e| e.into_mcp_error())?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Uploaded {} bytes to {}",
@@ -205,17 +229,14 @@ impl SshMcpServer {
                 ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error(),
             );
         }
-        let session = self
-            .pool
-            .get(&p.host)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, path = %p.remote_path, "get_file");
-
-        let bytes = session
-            .get_file(&p.remote_path)
-            .await
-            .map_err(|e| e.into_mcp_error())?;
+        let path = p.remote_path.clone();
+        let bytes = with_reconnect(&self.pool, &p.host, |session| {
+            let remote_path = path.clone();
+            async move { session.get_file(&remote_path).await }
+        })
+        .await
+        .map_err(|e| e.into_mcp_error())?;
         let encoded = BASE64.encode(&bytes);
         Ok(CallToolResult::success(vec![Content::text(format!(
             "{{\"bytes\":{},\"content\":\"{}\"}}",
@@ -284,6 +305,7 @@ mod tests {
     use crate::config::{AuthMethod, Config};
     use crate::pool::SessionFactory;
     use crate::ssh::{ExecOutput, MockSshSession, SshSession};
+    use std::sync::Mutex;
 
     fn make_host(name: &str) -> HostConfig {
         HostConfig {
@@ -302,12 +324,46 @@ mod tests {
         }
     }
 
+    /// Factory that always hands out the same session.
     struct MockFactory(Arc<MockSshSession>);
 
     #[async_trait::async_trait]
     impl SessionFactory for MockFactory {
         async fn connect(&self, _: &str, _: &HostConfig) -> Result<Arc<dyn SshSession>, ToolError> {
             Ok(Arc::clone(&self.0) as Arc<dyn SshSession>)
+        }
+    }
+
+    /// Factory that returns successive sessions from a queue, tracking how many times it was called.
+    struct MultiMockFactory {
+        queue: Mutex<Vec<Arc<MockSshSession>>>,
+        call_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl MultiMockFactory {
+        fn new(sessions: Vec<Arc<MockSshSession>>) -> Self {
+            Self {
+                queue: Mutex::new(sessions),
+                call_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionFactory for MultiMockFactory {
+        async fn connect(&self, _: &str, _: &HostConfig) -> Result<Arc<dyn SshSession>, ToolError> {
+            self.call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut queue = self.queue.lock().unwrap();
+            if queue.is_empty() {
+                return Err(ToolError::UnknownHost("no sessions left in queue".into()));
+            }
+            let session = Arc::clone(&queue[0]);
+            // Advance to the next session; stay on the last one if the queue is exhausted.
+            if queue.len() > 1 {
+                queue.rotate_left(1);
+            }
+            Ok(session as Arc<dyn SshSession>)
         }
     }
 
@@ -478,5 +534,100 @@ mod tests {
         let cmd = build_sudo_command("ls -la", None);
         assert!(cmd.contains("sudo -n"));
         assert!(cmd.contains("ls -la"));
+    }
+
+    /// Helper: build a server backed by a MultiMockFactory so we can verify reconnect behaviour.
+    fn make_server_multi(
+        sessions: Vec<Arc<MockSshSession>>,
+        host_name: &str,
+    ) -> (SshMcpServer, Arc<MultiMockFactory>) {
+        let mut hosts = HashMap::new();
+        hosts.insert(host_name.to_string(), make_host(host_name));
+        let config = Config {
+            shellcheck_path: None,
+            hosts: hosts.clone(),
+        };
+        let factory = Arc::new(MultiMockFactory::new(sessions));
+        let pool = Arc::new(ConnectionPool::new(
+            config,
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        ));
+        let security = Arc::new(SecurityChecker::new(None));
+        let server = SshMcpServer::new(pool, security, Arc::new(hosts));
+        (server, factory)
+    }
+
+    /// When the cached session is dead (returns SshConnect once), `with_reconnect` should evict
+    /// it, reconnect, and retry — returning Ok on the second attempt.
+    #[tokio::test]
+    async fn exec_reconnects_on_channel_send_error() {
+        // Session 1: stale — first exec call returns SshConnect.
+        let stale = Arc::new(MockSshSession::new());
+        stale.set_fail_next(1);
+
+        // Session 2: fresh — exec succeeds normally.
+        let fresh = Arc::new(MockSshSession::new());
+        fresh.set_exec(
+            "whoami",
+            ExecOutput {
+                stdout: "root\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
+        );
+
+        let (server, factory) = make_server_multi(vec![stale, fresh], "prod");
+
+        let result = server
+            .exec(Parameters(ExecParams {
+                host: "prod".into(),
+                command: "whoami".into(),
+                description: None,
+            }))
+            .await
+            .unwrap();
+
+        assert_ne!(result.is_error, Some(true));
+        match &result.content[0].raw {
+            RawContent::Text(t) => assert!(t.text.contains("root")),
+            _ => panic!("expected text content"),
+        }
+        // Factory was called twice: once for the initial connection, once after eviction.
+        assert_eq!(
+            factory.call_count.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+    }
+
+    /// When every connection attempt returns SshConnect, the helper must not retry more than once.
+    /// The factory should be called exactly twice (initial + one retry), and the error is returned.
+    #[tokio::test]
+    async fn exec_does_not_retry_twice_on_persistent_failure() {
+        // Both sessions always fail with SshConnect.
+        let always_dead_1 = Arc::new(MockSshSession::new());
+        always_dead_1.set_fail_next(usize::MAX);
+        let always_dead_2 = Arc::new(MockSshSession::new());
+        always_dead_2.set_fail_next(usize::MAX);
+
+        let (server, factory) = make_server_multi(vec![always_dead_1, always_dead_2], "prod");
+
+        let err = server
+            .exec(Parameters(ExecParams {
+                host: "prod".into(),
+                command: "whoami".into(),
+                description: None,
+            }))
+            .await
+            .unwrap_err();
+
+        // Must be an internal MCP error (SshConnect maps to InternalError).
+        use rmcp::model::ErrorCode;
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+
+        // Factory called exactly twice: initial + one retry, not more.
+        assert_eq!(
+            factory.call_count.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
     }
 }
