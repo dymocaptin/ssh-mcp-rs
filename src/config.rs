@@ -9,7 +9,7 @@ pub enum AuthMethod {
     Agent,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct HostConfig {
     pub host: String,
