@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -18,11 +17,18 @@ pub struct ExecOutput {
 #[async_trait]
 pub trait SshSession: Send + Sync {
     async fn exec(&self, command: &str) -> Result<ExecOutput, ToolError>;
-    async fn put_file(&self, remote_path: &str, content: &[u8], mode: u32) -> Result<(), ToolError>;
+    async fn put_file(&self, remote_path: &str, content: &[u8], mode: u32)
+        -> Result<(), ToolError>;
     async fn get_file(&self, remote_path: &str) -> Result<Vec<u8>, ToolError>;
 }
 
 /// Configurable mock for unit tests — no network required.
+#[cfg(test)]
+use std::collections::HashMap;
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub struct MockSshSession {
     /// Maps command string → result. Returns Ok with empty output if not found.
@@ -35,6 +41,7 @@ pub struct MockSshSession {
     pub put_calls: Arc<Mutex<Vec<(String, u32)>>>,
 }
 
+#[cfg(test)]
 impl MockSshSession {
     pub fn new() -> Self {
         Self::default()
@@ -59,6 +66,7 @@ impl MockSshSession {
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl SshSession for MockSshSession {
     async fn exec(&self, command: &str) -> Result<ExecOutput, ToolError> {
@@ -75,7 +83,12 @@ impl SshSession for MockSshSession {
         }
     }
 
-    async fn put_file(&self, remote_path: &str, content: &[u8], mode: u32) -> Result<(), ToolError> {
+    async fn put_file(
+        &self,
+        remote_path: &str,
+        content: &[u8],
+        mode: u32,
+    ) -> Result<(), ToolError> {
         self.put_calls
             .lock()
             .unwrap()
@@ -109,7 +122,11 @@ mod tests {
         let mock = MockSshSession::new();
         mock.set_exec(
             "ls",
-            ExecOutput { stdout: "file.txt\n".into(), stderr: String::new(), exit_code: 0 },
+            ExecOutput {
+                stdout: "file.txt\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
         );
         let out = mock.exec("ls").await.unwrap();
         assert_eq!(out.stdout, "file.txt\n");
@@ -137,7 +154,9 @@ mod tests {
     async fn mock_put_and_get_file_roundtrip() {
         let mock = MockSshSession::new();
         let content = b"hello world";
-        mock.put_file("/tmp/test.txt", content, 0o644).await.unwrap();
+        mock.put_file("/tmp/test.txt", content, 0o644)
+            .await
+            .unwrap();
         let retrieved = mock.get_file("/tmp/test.txt").await.unwrap();
         assert_eq!(retrieved, content);
     }
@@ -213,14 +232,23 @@ impl RusshSession {
         let addr = (config.host.as_str(), config.port);
         let mut handle = client::connect(russh_config, addr, ClientHandler)
             .await
-            .map_err(|e| ToolError::SshConnect { host: host_name.to_string(), source: e })?;
+            .map_err(|e| ToolError::SshConnect {
+                host: host_name.to_string(),
+                source: e,
+            })?;
 
         let auth_ok = Self::authenticate(&mut handle, host_name, config).await?;
         if !auth_ok {
-            return Err(ToolError::SshAuth { host: host_name.to_string() });
+            return Err(ToolError::SshAuth {
+                host: host_name.to_string(),
+            });
         }
 
-        Ok(Self { handle, host_name: host_name.to_string(), timeout_ms: config.timeout_ms })
+        Ok(Self {
+            handle,
+            host_name: host_name.to_string(),
+            timeout_ms: config.timeout_ms,
+        })
     }
 
     async fn authenticate(
@@ -235,7 +263,10 @@ impl RusshSession {
                 handle
                     .authenticate_password(user, password)
                     .await
-                    .map_err(|e| ToolError::SshConnect { host: host_name.to_string(), source: e })?
+                    .map_err(|e| ToolError::SshConnect {
+                        host: host_name.to_string(),
+                        source: e,
+                    })?
             }
             AuthMethod::Key => {
                 let path = config.key_path.as_deref().unwrap();
@@ -245,7 +276,10 @@ impl RusshSession {
                 let best_hash = handle
                     .best_supported_rsa_hash()
                     .await
-                    .map_err(|e| ToolError::SshConnect { host: host_name.to_string(), source: e })?
+                    .map_err(|e| ToolError::SshConnect {
+                        host: host_name.to_string(),
+                        source: e,
+                    })?
                     .flatten();
                 handle
                     .authenticate_publickey(
@@ -253,7 +287,10 @@ impl RusshSession {
                         PrivateKeyWithHashAlg::new(StdArc::new(key_pair), best_hash),
                     )
                     .await
-                    .map_err(|e| ToolError::SshConnect { host: host_name.to_string(), source: e })?
+                    .map_err(|e| ToolError::SshConnect {
+                        host: host_name.to_string(),
+                        source: e,
+                    })?
             }
             AuthMethod::Agent => {
                 use russh::keys::agent::client::AgentClient;
@@ -302,12 +339,21 @@ impl RusshSession {
 #[async_trait]
 impl SshSession for RusshSession {
     async fn exec(&self, command: &str) -> Result<ExecOutput, ToolError> {
-        let mut channel = self.handle.channel_open_session().await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
-        channel.exec(true, command).await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
+        let mut channel =
+            self.handle
+                .channel_open_session()
+                .await
+                .map_err(|e| ToolError::SshConnect {
+                    host: self.host_name.clone(),
+                    source: e,
+                })?;
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|e| ToolError::SshConnect {
+                host: self.host_name.clone(),
+                source: e,
+            })?;
 
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -329,7 +375,11 @@ impl SshSession for RusshSession {
             }
         }
 
-        Ok(ExecOutput { stdout, stderr, exit_code })
+        Ok(ExecOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
     }
 
     async fn put_file(
@@ -338,59 +388,101 @@ impl SshSession for RusshSession {
         content: &[u8],
         mode: u32,
     ) -> Result<(), ToolError> {
-        let channel = self.handle.channel_open_session().await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
-        channel.request_subsystem(true, "sftp").await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
-        let sftp = SftpSession::new(channel.into_stream()).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        let channel =
+            self.handle
+                .channel_open_session()
+                .await
+                .map_err(|e| ToolError::SshConnect {
+                    host: self.host_name.clone(),
+                    source: e,
+                })?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| ToolError::SshConnect {
+                host: self.host_name.clone(),
+                source: e,
+            })?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
 
         let flags = OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE;
-        let mut file = sftp.open_with_flags(remote_path, flags).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        let mut file = sftp
+            .open_with_flags(remote_path, flags)
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
 
         // Set Unix permissions via SFTP file attributes.
         use russh_sftp::protocol::FileAttributes;
-        let mut attrs = FileAttributes::default();
-        attrs.permissions = Some(mode);
-        file.set_metadata(attrs).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        let attrs = FileAttributes {
+            permissions: Some(mode),
+            ..Default::default()
+        };
+        file.set_metadata(attrs)
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
 
-        file.write_all(content).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
+        file.write_all(content).await.map_err(|e| ToolError::Sftp {
+            host: self.host_name.clone(),
+            message: e.to_string(),
         })?;
-        file.flush().await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
+        file.flush().await.map_err(|e| ToolError::Sftp {
+            host: self.host_name.clone(),
+            message: e.to_string(),
         })?;
         Ok(())
     }
 
     async fn get_file(&self, remote_path: &str) -> Result<Vec<u8>, ToolError> {
-        let channel = self.handle.channel_open_session().await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
-        channel.request_subsystem(true, "sftp").await.map_err(|e| {
-            ToolError::SshConnect { host: self.host_name.clone(), source: e }
-        })?;
-        let sftp = SftpSession::new(channel.into_stream()).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        let channel =
+            self.handle
+                .channel_open_session()
+                .await
+                .map_err(|e| ToolError::SshConnect {
+                    host: self.host_name.clone(),
+                    source: e,
+                })?;
+        channel
+            .request_subsystem(true, "sftp")
+            .await
+            .map_err(|e| ToolError::SshConnect {
+                host: self.host_name.clone(),
+                source: e,
+            })?;
+        let sftp = SftpSession::new(channel.into_stream())
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
 
         let flags = OpenFlags::READ;
-        let mut file = sftp.open_with_flags(remote_path, flags).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        let mut file = sftp
+            .open_with_flags(remote_path, flags)
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
 
         use tokio::io::AsyncReadExt as _;
         let mut buf = Vec::new();
-        file.read_to_end(&mut buf).await.map_err(|e| {
-            ToolError::Sftp { host: self.host_name.clone(), message: e.to_string() }
-        })?;
+        file.read_to_end(&mut buf)
+            .await
+            .map_err(|e| ToolError::Sftp {
+                host: self.host_name.clone(),
+                message: e.to_string(),
+            })?;
         Ok(buf)
     }
 }

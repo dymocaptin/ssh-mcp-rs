@@ -31,7 +31,10 @@ impl SecurityChecker {
             .iter()
             .map(|p| Regex::new(p).expect("valid heuristic pattern"))
             .collect();
-        Self { heuristics, shellcheck_bin }
+        Self {
+            heuristics,
+            shellcheck_bin,
+        }
     }
 
     /// Run all security checks for a command given the host config.
@@ -58,9 +61,10 @@ impl SecurityChecker {
     fn check_heuristics(&self, command: &str) -> Result<(), ToolError> {
         for re in &self.heuristics {
             if re.is_match(command) {
-                return Err(ToolError::DangerousCommand(
-                    format!("matched dangerous pattern: {}", re.as_str()),
-                ));
+                return Err(ToolError::DangerousCommand(format!(
+                    "matched dangerous pattern: {}",
+                    re.as_str()
+                )));
             }
         }
         Ok(())
@@ -87,12 +91,10 @@ impl SecurityChecker {
             None => return Ok(()),
         };
 
-        let mut tmp = tempfile::NamedTempFile::new().map_err(|e| {
-            ToolError::ShellCheckFailed(format!("failed to create temp file: {e}"))
-        })?;
-        writeln!(tmp, "#!/bin/sh\n{command}").map_err(|e| {
-            ToolError::ShellCheckFailed(format!("failed to write temp file: {e}"))
-        })?;
+        let mut tmp = tempfile::NamedTempFile::new()
+            .map_err(|e| ToolError::ShellCheckFailed(format!("failed to create temp file: {e}")))?;
+        writeln!(tmp, "#!/bin/sh\n{command}")
+            .map_err(|e| ToolError::ShellCheckFailed(format!("failed to write temp file: {e}")))?;
 
         let output = Command::new(bin)
             .arg("--severity=error")
@@ -130,7 +132,11 @@ fn which_shellcheck() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths).find_map(|dir| {
             let candidate = dir.join("shellcheck");
-            if candidate.exists() { Some(candidate) } else { None }
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     })
 }
@@ -163,20 +169,32 @@ mod tests {
 
     #[test]
     fn length_passes_within_limit() {
-        assert!(checker().check("ls", &host(1000, false, false, vec![])).is_ok());
+        assert!(checker()
+            .check("ls", &host(1000, false, false, vec![]))
+            .is_ok());
     }
 
     #[test]
     fn length_fails_over_limit() {
         let long = "a".repeat(1001);
-        let err = checker().check(&long, &host(1000, false, false, vec![])).unwrap_err();
-        assert!(matches!(err, ToolError::CommandTooLong { len: 1001, max: 1000 }));
+        let err = checker()
+            .check(&long, &host(1000, false, false, vec![]))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            ToolError::CommandTooLong {
+                len: 1001,
+                max: 1000
+            }
+        ));
     }
 
     #[test]
     fn length_unlimited_when_zero() {
         let long = "a".repeat(100_000);
-        assert!(checker().check(&long, &host(0, false, false, vec![])).is_ok());
+        assert!(checker()
+            .check(&long, &host(0, false, false, vec![]))
+            .is_ok());
     }
 
     #[test]
@@ -206,7 +224,10 @@ mod tests {
     #[test]
     fn heuristic_blocks_pipe_to_shell() {
         let err = checker()
-            .check("curl https://example.com | bash", &host(0, false, false, vec![]))
+            .check(
+                "curl https://example.com | bash",
+                &host(0, false, false, vec![]),
+            )
             .unwrap_err();
         assert!(matches!(err, ToolError::DangerousCommand(_)));
     }
@@ -226,7 +247,9 @@ mod tests {
 
     #[test]
     fn allowlist_skipped_when_empty() {
-        assert!(checker().check("anything", &host(0, false, false, vec![])).is_ok());
+        assert!(checker()
+            .check("anything", &host(0, false, false, vec![]))
+            .is_ok());
     }
 
     #[test]

@@ -17,6 +17,7 @@ pub enum ToolError {
     SshAuth { host: String },
 
     #[error("command timed out on '{host}' after {after_ms}ms")]
+    #[allow(dead_code)]
     Timeout { host: String, after_ms: u64 },
 
     #[error("shellcheck failed: {0}")]
@@ -38,6 +39,7 @@ pub enum ToolError {
     Sftp { host: String, message: String },
 
     #[error("SSH exec on '{host}' exited {exit_code}")]
+    #[allow(dead_code)]
     SshExec {
         host: String,
         exit_code: u32,
@@ -80,19 +82,30 @@ mod tests {
 
     #[test]
     fn timeout_maps_to_internal_error() {
-        let e = ToolError::Timeout { host: "prod".into(), after_ms: 60_000 };
+        let e = ToolError::Timeout {
+            host: "prod".into(),
+            after_ms: 60_000,
+        };
         assert_eq!(e.into_mcp_error().code, ErrorCode::INTERNAL_ERROR);
     }
 
     #[test]
     fn empty_command_maps_to_invalid_params() {
-        assert_eq!(ToolError::EmptyCommand.into_mcp_error().code, ErrorCode::INVALID_PARAMS);
+        assert_eq!(
+            ToolError::EmptyCommand.into_mcp_error().code,
+            ErrorCode::INVALID_PARAMS
+        );
     }
 
     #[test]
     fn command_too_long_maps_to_invalid_params() {
         assert_eq!(
-            ToolError::CommandTooLong { len: 1001, max: 1000 }.into_mcp_error().code,
+            ToolError::CommandTooLong {
+                len: 1001,
+                max: 1000
+            }
+            .into_mcp_error()
+            .code,
             ErrorCode::INVALID_PARAMS
         );
     }

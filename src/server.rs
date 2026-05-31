@@ -3,11 +3,9 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rmcp::{
-    ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    schemars,
-    tool, tool_handler, tool_router,
+    schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::Deserialize;
 
@@ -66,6 +64,7 @@ pub struct SshMcpServer {
     pool: Arc<ConnectionPool>,
     security: Arc<SecurityChecker>,
     configs: Arc<HashMap<String, HostConfig>>,
+    #[allow(dead_code)]
     tool_router: ToolRouter<SshMcpServer>,
 }
 
@@ -99,35 +98,60 @@ impl SshMcpServer {
     }
 
     /// Execute a shell command on a named SSH host.
-    #[tool(description = "Execute a shell command on a named SSH host. Returns stdout and stderr. Non-zero exit is returned as a tool-level error so the output is visible.")]
-    async fn exec(&self, Parameters(p): Parameters<ExecParams>) -> Result<CallToolResult, McpError> {
+    #[tool(
+        description = "Execute a shell command on a named SSH host. Returns stdout and stderr. Non-zero exit is returned as a tool-level error so the output is visible."
+    )]
+    async fn exec(
+        &self,
+        Parameters(p): Parameters<ExecParams>,
+    ) -> Result<CallToolResult, McpError> {
         let cfg = self.host_config(&p.host)?;
         Self::validate_command(&p.command)?;
-        self.security.check(&p.command, cfg).map_err(|e| e.into_mcp_error())?;
+        self.security
+            .check(&p.command, cfg)
+            .map_err(|e| e.into_mcp_error())?;
 
-        let session = self.pool.get(&p.host).await.map_err(|e| e.into_mcp_error())?;
+        let session = self
+            .pool
+            .get(&p.host)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, command = %p.command, description = ?p.description, "exec");
 
-        let out = session.exec(&p.command).await.map_err(|e| e.into_mcp_error())?;
+        let out = session
+            .exec(&p.command)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, exit_code = out.exit_code, "exec complete");
         Ok(format_exec_result(out))
     }
 
     /// Execute a shell command via sudo on a named SSH host.
-    #[tool(description = "Execute a shell command via sudo on a named SSH host. Uses sudo_password from config if set, otherwise assumes passwordless sudo.")]
+    #[tool(
+        description = "Execute a shell command via sudo on a named SSH host. Uses sudo_password from config if set, otherwise assumes passwordless sudo."
+    )]
     async fn sudo_exec(
         &self,
         Parameters(p): Parameters<SudoExecParams>,
     ) -> Result<CallToolResult, McpError> {
         let cfg = self.host_config(&p.host)?;
         Self::validate_command(&p.command)?;
-        self.security.check(&p.command, cfg).map_err(|e| e.into_mcp_error())?;
+        self.security
+            .check(&p.command, cfg)
+            .map_err(|e| e.into_mcp_error())?;
 
         let sudo_cmd = build_sudo_command(&p.command, cfg.sudo_password.as_deref());
-        let session = self.pool.get(&p.host).await.map_err(|e| e.into_mcp_error())?;
+        let session = self
+            .pool
+            .get(&p.host)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, command = %p.command, description = ?p.description, "sudo_exec");
 
-        let out = session.exec(&sudo_cmd).await.map_err(|e| e.into_mcp_error())?;
+        let out = session
+            .exec(&sudo_cmd)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, exit_code = out.exit_code, "sudo_exec complete");
         Ok(format_exec_result(out))
     }
@@ -140,13 +164,19 @@ impl SshMcpServer {
     ) -> Result<CallToolResult, McpError> {
         self.host_config(&p.host)?;
         if p.remote_path.is_empty() {
-            return Err(ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error());
+            return Err(
+                ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error(),
+            );
         }
-        let content = BASE64
-            .decode(&p.content)
-            .map_err(|e| ToolError::InvalidParam(format!("invalid base64: {e}")).into_mcp_error())?;
+        let content = BASE64.decode(&p.content).map_err(|e| {
+            ToolError::InvalidParam(format!("invalid base64: {e}")).into_mcp_error()
+        })?;
         let mode = p.mode.unwrap_or(0o644);
-        let session = self.pool.get(&p.host).await.map_err(|e| e.into_mcp_error())?;
+        let session = self
+            .pool
+            .get(&p.host)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, path = %p.remote_path, bytes = content.len(), "put_file");
 
         session
@@ -162,19 +192,30 @@ impl SshMcpServer {
     }
 
     /// Download a file from a named SSH host via SFTP.
-    #[tool(description = "Download a file from a named SSH host via SFTP. Returns JSON with 'bytes' count and base64 'content'.")]
+    #[tool(
+        description = "Download a file from a named SSH host via SFTP. Returns JSON with 'bytes' count and base64 'content'."
+    )]
     async fn get_file(
         &self,
         Parameters(p): Parameters<GetFileParams>,
     ) -> Result<CallToolResult, McpError> {
         self.host_config(&p.host)?;
         if p.remote_path.is_empty() {
-            return Err(ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error());
+            return Err(
+                ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error(),
+            );
         }
-        let session = self.pool.get(&p.host).await.map_err(|e| e.into_mcp_error())?;
+        let session = self
+            .pool
+            .get(&p.host)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         tracing::info!(host = %p.host, path = %p.remote_path, "get_file");
 
-        let bytes = session.get_file(&p.remote_path).await.map_err(|e| e.into_mcp_error())?;
+        let bytes = session
+            .get_file(&p.remote_path)
+            .await
+            .map_err(|e| e.into_mcp_error())?;
         let encoded = BASE64.encode(&bytes);
         Ok(CallToolResult::success(vec![Content::text(format!(
             "{{\"bytes\":{},\"content\":\"{}\"}}",
@@ -187,7 +228,9 @@ impl SshMcpServer {
     #[tool(description = "List the names of all configured SSH hosts.")]
     fn list_hosts(&self) -> Result<CallToolResult, McpError> {
         let names = self.pool.host_names();
-        Ok(CallToolResult::success(vec![Content::text(names.join("\n"))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            names.join("\n"),
+        )]))
     }
 }
 
@@ -226,7 +269,10 @@ pub fn format_exec_result(out: crate::ssh::ExecOutput) -> CallToolResult {
     };
 
     if out.exit_code != 0 {
-        CallToolResult::error(vec![Content::text(format!("exit code: {}\n{text}", out.exit_code))])
+        CallToolResult::error(vec![Content::text(format!(
+            "exit code: {}\n{text}",
+            out.exit_code
+        ))])
     } else {
         CallToolResult::success(vec![Content::text(text)])
     }
@@ -260,11 +306,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SessionFactory for MockFactory {
-        async fn connect(
-            &self,
-            _: &str,
-            _: &HostConfig,
-        ) -> Result<Arc<dyn SshSession>, ToolError> {
+        async fn connect(&self, _: &str, _: &HostConfig) -> Result<Arc<dyn SshSession>, ToolError> {
             Ok(Arc::clone(&self.0) as Arc<dyn SshSession>)
         }
     }
@@ -272,7 +314,10 @@ mod tests {
     fn make_server(mock: Arc<MockSshSession>, host_name: &str) -> SshMcpServer {
         let mut hosts = HashMap::new();
         hosts.insert(host_name.to_string(), make_host(host_name));
-        let config = Config { shellcheck_path: None, hosts: hosts.clone() };
+        let config = Config {
+            shellcheck_path: None,
+            hosts: hosts.clone(),
+        };
         let pool = Arc::new(ConnectionPool::new(
             config,
             Arc::new(MockFactory(mock)) as Arc<dyn SessionFactory>,
@@ -286,11 +331,19 @@ mod tests {
         let mock = Arc::new(MockSshSession::new());
         mock.set_exec(
             "ls",
-            ExecOutput { stdout: "file.txt\n".into(), stderr: String::new(), exit_code: 0 },
+            ExecOutput {
+                stdout: "file.txt\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
         );
         let server = make_server(mock, "prod");
         let result = server
-            .exec(Parameters(ExecParams { host: "prod".into(), command: "ls".into(), description: None }))
+            .exec(Parameters(ExecParams {
+                host: "prod".into(),
+                command: "ls".into(),
+                description: None,
+            }))
             .await
             .unwrap();
         assert_ne!(result.is_error, Some(true));
@@ -305,7 +358,11 @@ mod tests {
         let mock = Arc::new(MockSshSession::new());
         let server = make_server(mock, "prod");
         let err = server
-            .exec(Parameters(ExecParams { host: "nonexistent".into(), command: "ls".into(), description: None }))
+            .exec(Parameters(ExecParams {
+                host: "nonexistent".into(),
+                command: "ls".into(),
+                description: None,
+            }))
             .await
             .unwrap_err();
         use rmcp::model::ErrorCode;
@@ -317,7 +374,11 @@ mod tests {
         let mock = Arc::new(MockSshSession::new());
         let server = make_server(mock, "prod");
         let err = server
-            .exec(Parameters(ExecParams { host: "prod".into(), command: "".into(), description: None }))
+            .exec(Parameters(ExecParams {
+                host: "prod".into(),
+                command: "".into(),
+                description: None,
+            }))
             .await
             .unwrap_err();
         use rmcp::model::ErrorCode;
@@ -329,11 +390,19 @@ mod tests {
         let mock = Arc::new(MockSshSession::new());
         mock.set_exec(
             "false",
-            ExecOutput { stdout: String::new(), stderr: "error\n".into(), exit_code: 1 },
+            ExecOutput {
+                stdout: String::new(),
+                stderr: "error\n".into(),
+                exit_code: 1,
+            },
         );
         let server = make_server(mock, "prod");
         let result = server
-            .exec(Parameters(ExecParams { host: "prod".into(), command: "false".into(), description: None }))
+            .exec(Parameters(ExecParams {
+                host: "prod".into(),
+                command: "false".into(),
+                description: None,
+            }))
             .await
             .unwrap();
         assert_eq!(result.is_error, Some(true));
@@ -379,7 +448,10 @@ mod tests {
         let mut hosts = HashMap::new();
         hosts.insert("zebra".to_string(), make_host("zebra"));
         hosts.insert("alpha".to_string(), make_host("alpha"));
-        let config = Config { shellcheck_path: None, hosts: hosts.clone() };
+        let config = Config {
+            shellcheck_path: None,
+            hosts: hosts.clone(),
+        };
         let pool = Arc::new(ConnectionPool::new(
             config,
             Arc::new(MockFactory(Arc::clone(&mock))) as Arc<dyn SessionFactory>,

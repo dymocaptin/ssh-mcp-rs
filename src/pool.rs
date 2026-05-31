@@ -62,6 +62,7 @@ impl ConnectionPool {
     }
 
     /// Remove a cached session (forces reconnect on next `get`).
+    #[allow(dead_code)]
     pub async fn remove(&self, host_name: &str) {
         self.sessions.write().await.remove(host_name);
     }
@@ -102,7 +103,10 @@ mod tests {
                 },
             );
         }
-        Config { shellcheck_path: None, hosts }
+        Config {
+            shellcheck_path: None,
+            hosts,
+        }
     }
 
     struct MockFactory {
@@ -119,7 +123,10 @@ mod tests {
         }
 
         fn add(&self, name: &str, session: Arc<MockSshSession>) {
-            self.sessions.lock().unwrap().insert(name.to_string(), session);
+            self.sessions
+                .lock()
+                .unwrap()
+                .insert(name.to_string(), session);
         }
     }
 
@@ -144,14 +151,20 @@ mod tests {
     async fn get_unknown_host_returns_error() {
         let factory = Arc::new(MockFactory::new());
         let pool = ConnectionPool::new(make_config(&["prod"]), factory as Arc<dyn SessionFactory>);
-        assert!(matches!(pool.get("nonexistent").await, Err(ToolError::UnknownHost(_))));
+        assert!(matches!(
+            pool.get("nonexistent").await,
+            Err(ToolError::UnknownHost(_))
+        ));
     }
 
     #[tokio::test]
     async fn get_connects_lazily_on_first_call() {
         let factory = Arc::new(MockFactory::new());
         factory.add("prod", Arc::new(MockSshSession::new()));
-        let pool = ConnectionPool::new(make_config(&["prod"]), Arc::clone(&factory) as Arc<dyn SessionFactory>);
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
 
         assert_eq!(*factory.connect_count.lock().unwrap(), 0);
         pool.get("prod").await.unwrap();
@@ -162,7 +175,10 @@ mod tests {
     async fn get_reuses_existing_session() {
         let factory = Arc::new(MockFactory::new());
         factory.add("prod", Arc::new(MockSshSession::new()));
-        let pool = ConnectionPool::new(make_config(&["prod"]), Arc::clone(&factory) as Arc<dyn SessionFactory>);
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
 
         pool.get("prod").await.unwrap();
         pool.get("prod").await.unwrap();
@@ -173,7 +189,10 @@ mod tests {
     async fn remove_forces_reconnect() {
         let factory = Arc::new(MockFactory::new());
         factory.add("prod", Arc::new(MockSshSession::new()));
-        let pool = ConnectionPool::new(make_config(&["prod"]), Arc::clone(&factory) as Arc<dyn SessionFactory>);
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
 
         pool.get("prod").await.unwrap();
         pool.remove("prod").await;
@@ -184,7 +203,10 @@ mod tests {
     #[tokio::test]
     async fn host_names_returns_sorted_list() {
         let factory = Arc::new(MockFactory::new());
-        let pool = ConnectionPool::new(make_config(&["zebra", "alpha", "mango"]), factory as Arc<dyn SessionFactory>);
+        let pool = ConnectionPool::new(
+            make_config(&["zebra", "alpha", "mango"]),
+            factory as Arc<dyn SessionFactory>,
+        );
         assert_eq!(pool.host_names(), vec!["alpha", "mango", "zebra"]);
     }
 
@@ -194,10 +216,17 @@ mod tests {
         let mock = Arc::new(MockSshSession::new());
         mock.set_exec(
             "whoami",
-            ExecOutput { stdout: "root\n".into(), stderr: String::new(), exit_code: 0 },
+            ExecOutput {
+                stdout: "root\n".into(),
+                stderr: String::new(),
+                exit_code: 0,
+            },
         );
         factory.add("prod", Arc::clone(&mock));
-        let pool = ConnectionPool::new(make_config(&["prod"]), Arc::clone(&factory) as Arc<dyn SessionFactory>);
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
 
         let session = pool.get("prod").await.unwrap();
         let out = session.exec("whoami").await.unwrap();

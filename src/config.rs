@@ -32,10 +32,18 @@ pub struct HostConfig {
     pub allowed_commands: Vec<String>,
 }
 
-fn default_port() -> u16 { 22 }
-fn default_timeout_ms() -> u64 { 60_000 }
-fn default_max_command_chars() -> usize { 1_000 }
-fn default_shellcheck() -> bool { true }
+fn default_port() -> u16 {
+    22
+}
+fn default_timeout_ms() -> u64 {
+    60_000
+}
+fn default_max_command_chars() -> usize {
+    1_000
+}
+fn default_shellcheck() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,13 +119,15 @@ mod tests {
 
     #[test]
     fn parses_minimal_password_host() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.myhost]
 host = "1.2.3.4"
 user = "admin"
 auth = "password"
 password = "secret"
-"#);
+"#,
+        );
         let cfg = Config::load(f.path()).unwrap();
         let h = &cfg.hosts["myhost"];
         assert_eq!(h.host, "1.2.3.4");
@@ -133,7 +143,8 @@ password = "secret"
 
     #[test]
     fn parses_key_host_with_overrides() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.prod]
 host = "prod.example.com"
 port = 2222
@@ -145,7 +156,8 @@ max_command_chars = 500
 shellcheck = false
 windows = false
 allowed_commands = ["^systemctl\\s", "^journalctl\\s"]
-"#);
+"#,
+        );
         let cfg = Config::load(f.path()).unwrap();
         let h = &cfg.hosts["prod"];
         assert_eq!(h.port, 2222);
@@ -158,26 +170,30 @@ allowed_commands = ["^systemctl\\s", "^journalctl\\s"]
 
     #[test]
     fn parses_agent_host() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.dev]
 host = "dev.example.com"
 user = "ubuntu"
 auth = "agent"
-"#);
+"#,
+        );
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(cfg.hosts["dev"].auth, AuthMethod::Agent);
     }
 
     #[test]
     fn parses_global_shellcheck_path() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 shellcheck_path = "/usr/local/bin/shellcheck"
 
 [hosts.h]
 host = "1.2.3.4"
 user = "u"
 auth = "agent"
-"#);
+"#,
+        );
         let cfg = Config::load(f.path()).unwrap();
         assert_eq!(
             cfg.shellcheck_path.as_deref(),
@@ -187,12 +203,14 @@ auth = "agent"
 
     #[test]
     fn rejects_key_auth_without_key_path() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.h]
 host = "1.2.3.4"
 user = "u"
 auth = "key"
-"#);
+"#,
+        );
         assert!(matches!(
             Config::load(f.path()),
             Err(ConfigError::MissingKeyPath(_))
@@ -201,12 +219,14 @@ auth = "key"
 
     #[test]
     fn rejects_password_auth_without_password() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.h]
 host = "1.2.3.4"
 user = "u"
 auth = "password"
-"#);
+"#,
+        );
         assert!(matches!(
             Config::load(f.path()),
             Err(ConfigError::MissingPassword(_))
@@ -221,13 +241,15 @@ auth = "password"
 
     #[test]
     fn rejects_unknown_keys() {
-        let f = write_toml(r#"
+        let f = write_toml(
+            r#"
 [hosts.h]
 host = "1.2.3.4"
 user = "u"
 auth = "agent"
 unknown_field = "oops"
-"#);
+"#,
+        );
         assert!(matches!(Config::load(f.path()), Err(ConfigError::Parse(_))));
     }
 
