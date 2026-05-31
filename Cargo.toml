@@ -1,0 +1,29 @@
+[package]
+name = "ssh-mcp-rs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ssh-mcp-rs"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.7", features = ["server", "macros", "schemars"] }
+russh = "0.61"
+russh-sftp = "2.3"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+base64 = "0.22"
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+tempfile = "3"
+async-trait = "0.1"
+anyhow = "1"
+
+[dev-dependencies]
+testcontainers = "0.23"
