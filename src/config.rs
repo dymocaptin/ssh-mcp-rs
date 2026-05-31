@@ -305,7 +305,10 @@ key_path = "~/.ssh/id_ed25519"
         let cfg = Config::load(f.path()).unwrap();
         let key_path = cfg.hosts["h"].key_path.as_ref().unwrap();
         assert!(!key_path.starts_with("~"), "tilde should be expanded");
-        assert!(key_path.is_absolute(), "path should be absolute after expansion");
+        assert!(
+            key_path.is_absolute(),
+            "path should be absolute after expansion"
+        );
         // Must end with the literal suffix, not any transformed version
         assert!(key_path.ends_with(".ssh/id_ed25519"));
     }
@@ -325,7 +328,10 @@ auth = "agent"
         let cfg = Config::load(f.path()).unwrap();
         let sc_path = cfg.shellcheck_path.as_ref().unwrap();
         assert!(!sc_path.starts_with("~"), "tilde should be expanded");
-        assert!(sc_path.is_absolute(), "path should be absolute after expansion");
+        assert!(
+            sc_path.is_absolute(),
+            "path should be absolute after expansion"
+        );
         assert!(sc_path.ends_with("bin/shellcheck"));
     }
 
@@ -359,7 +365,10 @@ auth = "agent"
         // Crucially, the expanded form still has the traversal components
         // visible — we do not silently drop or normalize them.
         let s = expanded.to_string_lossy();
-        assert!(s.contains("../../"), "traversal components must be preserved verbatim");
+        assert!(
+            s.contains("../../"),
+            "traversal components must be preserved verbatim"
+        );
     }
 
     #[test]
