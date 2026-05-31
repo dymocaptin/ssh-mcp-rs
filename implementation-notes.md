@@ -8,6 +8,10 @@ Decisions, ambiguities, and tradeoffs made during implementation.
 
 - **`server.rs` added to source layout**: The spec lists `tools.rs` for "rmcp tool handlers". With rmcp's macro approach, tools are methods on the server struct. Renamed to `server.rs` to reflect that it holds the MCP server type.
 
+- **`#![deny(warnings)]` deferred to Task 9**: Adding it to `main.rs` during stub construction causes dead_code warnings on every field not yet used in the binary. It is re-added when all modules are wired up in Task 9.
+
+- **`#[serde(default)]` on `Config::hosts`**: Without this, an empty TOML file produces a `Parse` error (missing field) rather than `NoHosts`. Added `#[serde(default)]` so validation catches the empty state correctly.
+
 ## Ambiguities
 
 ## Tradeoffs
