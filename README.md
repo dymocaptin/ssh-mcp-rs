@@ -1,13 +1,13 @@
 # ssh-mcp-rs
 
-A Rust MCP server that exposes SSH control over multiple named remote hosts via stdio transport.
+A Rust MCP server that gives Claude Code SSH control over remote hosts — run commands, transfer files, and manage servers without leaving your editor.
 
 ## Features
 
-- **Multiple hosts** — configure any number of SSH targets in a single TOML config
 - **Five tools** — `exec`, `sudo_exec`, `put_file`, `get_file`, `list_hosts`
-- **Three auth methods** — password, SSH key, SSH agent forwarding
-- **Security layer** — fast heuristic blocking (fork bombs, device writes, pipe-to-shell), `shellcheck` gate (default on), per-host command allowlist, command length limit
+- **Three auth methods** — SSH key (`~` expanded), SSH agent, password
+- **Security layer** — `shellcheck` gate (default on), heuristic blocking of fork bombs / device writes / pipe-to-shell, per-host command allowlist, command length limit
+- **Multiple hosts** — configure any number of SSH targets in one TOML file
 - **Connection pooling** — lazy connect per host, sessions reused across calls
 
 ## Installation
@@ -16,18 +16,41 @@ A Rust MCP server that exposes SSH control over multiple named remote hosts via 
 cargo install --path .
 ```
 
-## Configuration
+## Claude Code Setup
 
-Default path: `~/.config/ssh-mcp/config.toml`. Override with `--config /path/to/config.toml`.
+**1. Install and register the server:**
+
+```bash
+cargo install --path .
+claude mcp add ssh ~/.cargo/bin/ssh-mcp-rs
+```
+
+**2. Create `~/.config/ssh-mcp/config.toml`:**
 
 ```toml
+[hosts.myserver]
+host = "myserver.example.com"
+user = "deploy"
+auth = "key"
+key_path = "~/.ssh/id_ed25519"     # ~ is expanded automatically
+```
+
+**3. Restart Claude Code.** The `ssh` MCP server loads at startup.
+
+## Configuration Reference
+
+Default config path: `~/.config/ssh-mcp/config.toml`. Override with `--config /path/to/config.toml`.
+
+```toml
+# shellcheck_path = "~/bin/shellcheck"   # optional; overrides PATH lookup
+
 [hosts.prod]
 host = "192.168.1.10"
-port = 22
+port = 22                           # default: 22
 user = "admin"
 auth = "key"                        # "password" | "key" | "agent"
-key_path = "~/.ssh/id_ed25519"
-sudo_password = "supersecret"       # optional
+key_path = "~/.ssh/id_ed25519"      # required for auth = "key"; ~ expanded
+sudo_password = "supersecret"       # optional; required for sudo_exec
 timeout_ms = 60000                  # default: 60000
 max_command_chars = 1000            # default: 1000; 0 = unlimited
 shellcheck = true                   # default: true
@@ -37,19 +60,7 @@ allowed_commands = []               # optional regex allowlist
 host = "dev.example.com"
 user = "ubuntu"
 auth = "agent"                      # reads $SSH_AUTH_SOCK
-```
-
-## MCP Client Setup
-
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "ssh-mcp-rs",
-      "args": ["--config", "/path/to/config.toml"]
-    }
-  }
-}
+shellcheck = false
 ```
 
 ## Tools
@@ -58,15 +69,15 @@ auth = "agent"                      # reads $SSH_AUTH_SOCK
 |------|-------------|
 | `exec` | Run a shell command on a named host |
 | `sudo_exec` | Run a command via sudo on a named host |
-| `put_file` | Upload a base64-encoded file via SFTP |
+| `put_file` | Upload a file (base64-encoded) via SFTP |
 | `get_file` | Download a file as base64 via SFTP |
 | `list_hosts` | List all configured host names |
 
 ## Security
 
-`shellcheck` must be installed and in `$PATH` (or set `shellcheck_path` in config). The server will refuse to start if shellcheck is enabled for any host and the binary is not found.
+`shellcheck` must be installed and in `$PATH` (or set `shellcheck_path` in config). The server refuses to start if shellcheck is enabled for any host and the binary is not found.
 
-To disable: set `shellcheck = false` per host.
+To disable per host: `shellcheck = false`.
 
 ## Development
 
