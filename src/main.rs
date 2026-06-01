@@ -3,11 +3,14 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rmcp::{transport::stdio, ServiceExt};
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 
 mod config;
 mod error;
 mod pool;
+mod reload;
 mod security;
 mod server;
 mod ssh;
@@ -62,12 +65,39 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let security = Arc::new(SecurityChecker::new(shellcheck_bin));
-    let configs = Arc::new(cfg.hosts.clone());
     let pool = Arc::new(ConnectionPool::new(
-        cfg,
+        cfg.clone(),
         Arc::new(RusshFactory) as Arc<dyn pool::SessionFactory>,
     ));
-    let srv = SshMcpServer::new(pool, security, configs);
+    let shared_config = Arc::new(RwLock::new(cfg));
+
+    // Spawn SIGHUP handler for dynamic config reload.
+    {
+        let pool = Arc::clone(&pool);
+        let shared_config = Arc::clone(&shared_config);
+        let config_path = config_path.clone();
+        tokio::spawn(async move {
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to register SIGHUP handler");
+                    return;
+                }
+            };
+            loop {
+                sighup.recv().await;
+                tracing::info!(path = %config_path.display(), "SIGHUP received — reloading config");
+                match reload::reload_config(&config_path, &shared_config, &pool).await {
+                    Ok(()) => tracing::info!("config reload successful"),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "config reload failed — keeping old config")
+                    }
+                }
+            }
+        });
+    }
+
+    let srv = SshMcpServer::new(pool, security, shared_config);
 
     tracing::info!("starting SSH MCP server on stdio");
     let service = srv.serve(stdio()).await?;

@@ -20,7 +20,7 @@ pub trait SessionFactory: Send + Sync {
 
 /// Holds one persistent SSH session per named host, lazily connected on first use.
 pub struct ConnectionPool {
-    configs: HashMap<String, HostConfig>,
+    configs: RwLock<HashMap<String, HostConfig>>,
     sessions: Arc<RwLock<HashMap<String, Arc<dyn SshSession>>>>,
     factory: Arc<dyn SessionFactory>,
 }
@@ -28,7 +28,7 @@ pub struct ConnectionPool {
 impl ConnectionPool {
     pub fn new(config: Config, factory: Arc<dyn SessionFactory>) -> Self {
         Self {
-            configs: config.hosts,
+            configs: RwLock::new(config.hosts),
             sessions: Arc::new(RwLock::new(HashMap::new())),
             factory,
         }
@@ -45,13 +45,16 @@ impl ConnectionPool {
         }
 
         // Validate host exists before acquiring write lock.
-        let host_config = self
-            .configs
-            .get(host_name)
-            .ok_or_else(|| ToolError::UnknownHost(host_name.to_string()))?;
+        let host_config = {
+            let configs = self.configs.read().await;
+            configs
+                .get(host_name)
+                .ok_or_else(|| ToolError::UnknownHost(host_name.to_string()))?
+                .clone()
+        };
 
         // Slow path: connect and cache.
-        let session = self.factory.connect(host_name, host_config).await?;
+        let session = self.factory.connect(host_name, &host_config).await?;
         let mut sessions = self.sessions.write().await;
         // Re-check after write lock: another task may have raced us.
         if let Some(s) = sessions.get(host_name) {
@@ -68,10 +71,54 @@ impl ConnectionPool {
     }
 
     /// Return sorted list of all configured host names.
-    pub fn host_names(&self) -> Vec<String> {
-        let mut names: Vec<_> = self.configs.keys().cloned().collect();
+    pub async fn host_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self.configs.read().await.keys().cloned().collect();
         names.sort();
         names
+    }
+
+    /// Reconcile the pool against `new_config`:
+    /// - Hosts added in `new_config` become available for future `get` calls.
+    /// - Hosts removed from `new_config` have their cached sessions evicted.
+    /// - Hosts whose `HostConfig` changed have their cached sessions evicted
+    ///   (forcing a reconnect on next `get`).
+    /// - Unchanged hosts keep their existing sessions.
+    pub async fn reconcile(&self, new_config: &Config) {
+        // Acquire both locks together to avoid races with concurrent get calls.
+        let mut configs = self.configs.write().await;
+        let mut sessions = self.sessions.write().await;
+
+        // Find removed hosts — drop their sessions.
+        let removed: Vec<String> = configs
+            .keys()
+            .filter(|name| !new_config.hosts.contains_key(*name))
+            .cloned()
+            .collect();
+        for name in &removed {
+            configs.remove(name);
+            sessions.remove(name);
+            tracing::info!(host = %name, "config reload: host removed");
+        }
+
+        // Update existing hosts and add new ones.
+        for (name, new_host_cfg) in &new_config.hosts {
+            match configs.get(name) {
+                Some(old) if old == new_host_cfg => {
+                    // Unchanged — keep existing session.
+                }
+                Some(_) => {
+                    // Changed — drop session to force reconnect.
+                    sessions.remove(name);
+                    configs.insert(name.clone(), new_host_cfg.clone());
+                    tracing::info!(host = %name, "config reload: host config changed, session dropped");
+                }
+                None => {
+                    // New host.
+                    configs.insert(name.clone(), new_host_cfg.clone());
+                    tracing::info!(host = %name, "config reload: host added");
+                }
+            }
+        }
     }
 }
 
@@ -207,7 +254,101 @@ mod tests {
             make_config(&["zebra", "alpha", "mango"]),
             factory as Arc<dyn SessionFactory>,
         );
-        assert_eq!(pool.host_names(), vec!["alpha", "mango", "zebra"]);
+        assert_eq!(pool.host_names().await, vec!["alpha", "mango", "zebra"]);
+    }
+
+    // ── reconcile tests ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn reconcile_adds_new_host() {
+        let factory = Arc::new(MockFactory::new());
+        factory.add("prod", Arc::new(MockSshSession::new()));
+        factory.add("dev", Arc::new(MockSshSession::new()));
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
+
+        // Before reconcile: only "prod" is known.
+        assert_eq!(pool.host_names().await, vec!["prod"]);
+
+        let new_config = make_config(&["prod", "dev"]);
+        pool.reconcile(&new_config).await;
+
+        // After reconcile: both hosts are known.
+        assert_eq!(pool.host_names().await, vec!["dev", "prod"]);
+    }
+
+    #[tokio::test]
+    async fn reconcile_removes_old_host() {
+        let factory = Arc::new(MockFactory::new());
+        factory.add("prod", Arc::new(MockSshSession::new()));
+        factory.add("dev", Arc::new(MockSshSession::new()));
+        let pool = ConnectionPool::new(
+            make_config(&["prod", "dev"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
+
+        // Connect both hosts so they have cached sessions.
+        pool.get("prod").await.unwrap();
+        pool.get("dev").await.unwrap();
+
+        let new_config = make_config(&["prod"]);
+        pool.reconcile(&new_config).await;
+
+        // After reconcile: only "prod" remains.
+        assert_eq!(pool.host_names().await, vec!["prod"]);
+        // "dev" is gone from the pool.
+        assert!(matches!(
+            pool.get("dev").await,
+            Err(ToolError::UnknownHost(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn reconcile_unchanged_config_does_not_reconnect() {
+        let factory = Arc::new(MockFactory::new());
+        factory.add("prod", Arc::new(MockSshSession::new()));
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
+
+        // Connect once.
+        pool.get("prod").await.unwrap();
+        assert_eq!(*factory.connect_count.lock().unwrap(), 1);
+
+        // Reconcile with identical config — no reconnect.
+        let same_config = make_config(&["prod"]);
+        pool.reconcile(&same_config).await;
+
+        // Still only one connect — session was not dropped.
+        assert_eq!(*factory.connect_count.lock().unwrap(), 1);
+        pool.get("prod").await.unwrap();
+        assert_eq!(*factory.connect_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn reconcile_changed_host_config_drops_existing_session() {
+        let factory = Arc::new(MockFactory::new());
+        factory.add("prod", Arc::new(MockSshSession::new()));
+        let pool = ConnectionPool::new(
+            make_config(&["prod"]),
+            Arc::clone(&factory) as Arc<dyn SessionFactory>,
+        );
+
+        // Connect once.
+        pool.get("prod").await.unwrap();
+        assert_eq!(*factory.connect_count.lock().unwrap(), 1);
+
+        // Build a new config with a different port for "prod".
+        let mut changed = make_config(&["prod"]);
+        changed.hosts.get_mut("prod").unwrap().port = 2222;
+        pool.reconcile(&changed).await;
+
+        // Old session was dropped; next get will reconnect.
+        pool.get("prod").await.unwrap();
+        assert_eq!(*factory.connect_count.lock().unwrap(), 2);
     }
 
     #[tokio::test]

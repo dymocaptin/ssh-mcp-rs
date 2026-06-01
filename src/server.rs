@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -8,8 +7,9 @@ use rmcp::{
     schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use serde::Deserialize;
+use tokio::sync::RwLock;
 
-use crate::config::HostConfig;
+use crate::config::{Config, HostConfig};
 use crate::error::ToolError;
 use crate::pool::ConnectionPool;
 use crate::security::SecurityChecker;
@@ -58,12 +58,12 @@ pub struct GetFileParams {
     pub remote_path: String,
 }
 
-/// The MCP server: holds pool, security checker, host configs, and tool router.
+/// The MCP server: holds pool, security checker, shared config, and tool router.
 #[derive(Clone)]
 pub struct SshMcpServer {
     pool: Arc<ConnectionPool>,
     security: Arc<SecurityChecker>,
-    configs: Arc<HashMap<String, HostConfig>>,
+    config: Arc<RwLock<Config>>,
     #[allow(dead_code)]
     tool_router: ToolRouter<SshMcpServer>,
 }
@@ -74,19 +74,24 @@ impl SshMcpServer {
     pub fn new(
         pool: Arc<ConnectionPool>,
         security: Arc<SecurityChecker>,
-        configs: Arc<HashMap<String, HostConfig>>,
+        config: Arc<RwLock<Config>>,
     ) -> Self {
         Self {
             pool,
             security,
-            configs,
+            config,
             tool_router: Self::tool_router(),
         }
     }
 
-    fn host_config(&self, host: &str) -> Result<&HostConfig, McpError> {
-        self.configs
+    /// Clone the `HostConfig` for `host` from the shared config, or return an MCP error.
+    async fn host_config(&self, host: &str) -> Result<HostConfig, McpError> {
+        self.config
+            .read()
+            .await
+            .hosts
             .get(host)
+            .cloned()
             .ok_or_else(|| ToolError::UnknownHost(host.to_string()).into_mcp_error())
     }
 
@@ -105,10 +110,10 @@ impl SshMcpServer {
         &self,
         Parameters(p): Parameters<ExecParams>,
     ) -> Result<CallToolResult, McpError> {
-        let cfg = self.host_config(&p.host)?;
+        let cfg = self.host_config(&p.host).await?;
         Self::validate_command(&p.command)?;
         self.security
-            .check(&p.command, cfg)
+            .check(&p.command, &cfg)
             .map_err(|e| e.into_mcp_error())?;
 
         let session = self
@@ -134,10 +139,10 @@ impl SshMcpServer {
         &self,
         Parameters(p): Parameters<SudoExecParams>,
     ) -> Result<CallToolResult, McpError> {
-        let cfg = self.host_config(&p.host)?;
+        let cfg = self.host_config(&p.host).await?;
         Self::validate_command(&p.command)?;
         self.security
-            .check(&p.command, cfg)
+            .check(&p.command, &cfg)
             .map_err(|e| e.into_mcp_error())?;
 
         let sudo_cmd = build_sudo_command(&p.command, cfg.sudo_password.as_deref());
@@ -162,7 +167,7 @@ impl SshMcpServer {
         &self,
         Parameters(p): Parameters<PutFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.host_config(&p.host)?;
+        self.host_config(&p.host).await?;
         if p.remote_path.is_empty() {
             return Err(
                 ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error(),
@@ -199,7 +204,7 @@ impl SshMcpServer {
         &self,
         Parameters(p): Parameters<GetFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.host_config(&p.host)?;
+        self.host_config(&p.host).await?;
         if p.remote_path.is_empty() {
             return Err(
                 ToolError::InvalidParam("remote_path must not be empty".into()).into_mcp_error(),
@@ -226,8 +231,8 @@ impl SshMcpServer {
 
     /// List all configured SSH host names.
     #[tool(description = "List the names of all configured SSH hosts.")]
-    fn list_hosts(&self) -> Result<CallToolResult, McpError> {
-        let names = self.pool.host_names();
+    async fn list_hosts(&self) -> Result<CallToolResult, McpError> {
+        let names = self.pool.host_names().await;
         Ok(CallToolResult::success(vec![Content::text(
             names.join("\n"),
         )]))
@@ -284,6 +289,7 @@ mod tests {
     use crate::config::{AuthMethod, Config};
     use crate::pool::SessionFactory;
     use crate::ssh::{ExecOutput, MockSshSession, SshSession};
+    use std::collections::HashMap;
 
     fn make_host(name: &str) -> HostConfig {
         HostConfig {
@@ -316,14 +322,14 @@ mod tests {
         hosts.insert(host_name.to_string(), make_host(host_name));
         let config = Config {
             shellcheck_path: None,
-            hosts: hosts.clone(),
+            hosts,
         };
         let pool = Arc::new(ConnectionPool::new(
-            config,
+            config.clone(),
             Arc::new(MockFactory(mock)) as Arc<dyn SessionFactory>,
         ));
         let security = Arc::new(SecurityChecker::new(None));
-        SshMcpServer::new(pool, security, Arc::new(hosts))
+        SshMcpServer::new(pool, security, Arc::new(RwLock::new(config)))
     }
 
     #[tokio::test]
@@ -450,15 +456,15 @@ mod tests {
         hosts.insert("alpha".to_string(), make_host("alpha"));
         let config = Config {
             shellcheck_path: None,
-            hosts: hosts.clone(),
+            hosts,
         };
         let pool = Arc::new(ConnectionPool::new(
-            config,
+            config.clone(),
             Arc::new(MockFactory(Arc::clone(&mock))) as Arc<dyn SessionFactory>,
         ));
         let security = Arc::new(SecurityChecker::new(None));
-        let server = SshMcpServer::new(pool, security, Arc::new(hosts));
-        let result = server.list_hosts().unwrap();
+        let server = SshMcpServer::new(pool, security, Arc::new(RwLock::new(config)));
+        let result = server.list_hosts().await.unwrap();
         match &result.content[0].raw {
             RawContent::Text(t) => assert_eq!(t.text, "alpha\nzebra"),
             _ => panic!("expected text content"),

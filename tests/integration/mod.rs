@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use testcontainers::core::ContainerPort;
 use testcontainers::{runners::AsyncRunner, ContainerAsync, GenericImage, ImageExt};
+use tokio::sync::RwLock;
 
 use ssh_mcp_rs::config::{AuthMethod, Config, HostConfig};
 use ssh_mcp_rs::pool::{ConnectionPool, SessionFactory};
@@ -142,10 +143,10 @@ async fn test_put_and_get_file_roundtrip() {
 #[tokio::test]
 async fn test_list_hosts_no_docker_needed() {
     // list_hosts does not open a connection — use a dummy port.
-    let pool = make_pool(make_password_config(22222));
+    let cfg = make_password_config(22222);
+    let pool = make_pool(cfg.clone());
     let security = Arc::new(SecurityChecker::new(None));
-    let configs = Arc::new(make_password_config(22222).hosts);
-    let server = SshMcpServer::new(Arc::clone(&pool), security, configs);
+    let server = SshMcpServer::new(Arc::clone(&pool), security, Arc::new(RwLock::new(cfg)));
     drop(server); // just verify construction works
-    assert_eq!(pool.host_names(), vec!["test"]);
+    assert_eq!(pool.host_names().await, vec!["test"]);
 }
